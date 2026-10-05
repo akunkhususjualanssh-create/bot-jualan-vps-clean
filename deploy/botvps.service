@@ -1,0 +1,15 @@
+[Unit]
+Description=Bot Jualan VPS - GEN SSH STORE
+After=network.target
+
+[Service]
+Type=simple
+# Ganti sesuai lokasi repo di server kamu
+WorkingDirectory=/root/bot-jualan-vps
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
