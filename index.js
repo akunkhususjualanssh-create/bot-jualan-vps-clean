@@ -1,32 +1,16 @@
-// ===== BOT JUALAN VPS - GEN SSH STORE (v2.1 UI Premium HTML) =====
-require('dotenv').config();
+// ===== BOT JUALAN VPS - GEN SSH STORE (v2.2 — AUTO PAYMENT GOMERCH) =====
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
+const gomerch = require('./gomerch'); // QRIS dinamis + auto-deteksi pembayaran
 
 const CONFIG = {
-  token: process.env.BOT_TOKEN,
-  adminIds: (process.env.ADMIN_IDS || '').split(',').map(s => parseInt(s.trim())).filter(Boolean),
-  support: process.env.SUPPORT || '@gensshstore',
-  storeName: process.env.STORE_NAME || 'GEN SSH STORE',
-  dbFile: path.join(__dirname, 'database', 'db.json')
+  token: '8996665187:AAF4mZHyiHo6CwmCwEFaEWL4VFStidoZVzE',
+  adminIds: [7761880504],
+  support: '@gensshstore',
+  storeName: 'GEN SSH STORE',
+  dbFile: path.join(__dirname, 'db.json')
 };
-
-// Validasi konfigurasi
-if (!CONFIG.token) {
-  console.error('❌ BOT_TOKEN belum diisi! Edit file .env lalu isi token bot kamu.');
-  process.exit(1);
-}
-if (!CONFIG.adminIds.length) {
-  console.error('❌ ADMIN_IDS belum diisi! Edit file .env lalu isi ID Telegram admin kamu.');
-  process.exit(1);
-}
-
-// Pastikan folder database ada
-fs.mkdirSync(path.join(__dirname, 'database'), { recursive: true });
-
-// Pastikan folder database ada
-fs.mkdirSync(path.join(__dirname, 'database'), { recursive: true });
 
 let db = { products: [], orders: {}, qris: '' };
 if (fs.existsSync(CONFIG.dbFile)) {
@@ -39,6 +23,10 @@ const save = () => fs.writeFileSync(CONFIG.dbFile, JSON.stringify(db, null, 2));
 
 const bot = new TelegramBot(CONFIG.token, { polling: true });
 console.log('Bot v2.1 HTML UI started!');
+
+// pengaman: error di 1 callback jangan sampai matiin bot
+process.on('uncaughtException', (e) => console.error('[uncaught]', e && e.message));
+process.on('unhandledRejection', (e) => console.error('[unhandled]', e && (e.message || e)));
 
 const isAdmin = (id) => CONFIG.adminIds.includes(id);
 const fmt = (n) => 'Rp' + Number(n).toLocaleString('id-ID');
@@ -125,6 +113,15 @@ function adminMenuText() {
 
 // ---------- Helpers ----------
 const userState = {};
+const activeWatchers = {}; // orderId -> watcher (auto-detect bayar)
+
+// kirim buffer (gambar QR dari memory)
+const trackSendBuffer = async (chatId, method, buffer, opts) => {
+  try {
+    const msg = await bot.sendPhoto(chatId, buffer, opts);
+    return msg;
+  } catch (e) { console.error('sendBuffer err', e.message); }
+};
 
 // ---------- Message tracking (auto-delete on /start) ----------
 const tracked = {}; // uid -> [msgIds]
@@ -204,22 +201,81 @@ bot.on('callback_query', async (q) => {
     return answer();
   }
 
-  // Buy flow
+  // Buy flow — AUTO PAYMENT (QRIS dinamis GoMerch + auto-deteksi)
   if (data.startsWith('buy_')) {
     const i = parseInt(data.split('_')[1]);
     const p = db.products[i];
     if (!p) return answer('Produk tidak ditemukan');
     const orderId = 'ORD' + Date.now().toString(36).toUpperCase();
-    userState[uid] = { step: 'await_bukti', orderId, productIndex: i };
-    const caption = `🧾 <b>PESANAN ${orderId}</b>\n${LINE}\n\n` +
-      `<blockquote>📦 Produk: <b>${esc(p.nama)}</b>\n💰 Total: <b>${fmt(p.harga)}</b></blockquote>\n\n` +
-      `📷 Scan QRIS di atas untuk bayar\n\n` +
-      `<blockquote>1️⃣ Bayar via QRIS\n2️⃣ Screenshot bukti transfer\n3️⃣ Kirim bukti ke sini</blockquote>\n\n` +
-      `⏳ Proses 10–15 menit setelah bukti diterima\n📞 Butuh bantuan? ${CONFIG.support}`;
-    const kb = { inline_keyboard: [[{ text: '« Kembali ke Katalog', callback_data: 'menu_katalog' }]] };
-    if (db.qris) await trackSend(chatId, 'sendPhoto', db.qris, { caption, parse_mode: 'HTML', reply_markup: kb });
-    else await trackSend(chatId, 'sendMessage', caption + '\n\n⚠️ QRIS belum tersedia, hubungi admin.', { parse_mode: 'HTML', reply_markup: kb });
+    answer('⏳ Membuat QRIS...');
+    try {
+      const qr = await gomerch.generateQris(p.harga);
+      const img = await gomerch.downloadQrImage(qr.qr_url);
+      const startTime = new Date().toISOString();
+      userState[uid] = { step: 'menunggu_bayar', orderId, productIndex: i };
+
+      const caption = `🧾 <b>PESANAN ${orderId}</b>\n${LINE}\n\n` +
+        `<blockquote>📦 Produk: <b>${esc(p.nama)}</b>\n💰 Total: <b>${fmt(p.harga)}</b>\n⏰ Batas bayar: 15 menit</blockquote>\n\n` +
+        `📱 Scan QRIS ini pakai <b>GoPay / DANA / OVO / ShopeePay / m-banking</b>\n\n` +
+        `<blockquote>✅ Bayar PERSIS ${fmt(p.harga)}\n⚡ Begitu dana masuk, order <b>OTOMATIS disetujui</b> — gak perlu kirim bukti!</blockquote>\n\n` +
+        `📞 Butuh bantuan? ${CONFIG.support}`;
+      const kb = { inline_keyboard: [[{ text: '🔄 Sudah Bayar? Cek Status', callback_data: 'cekstatus_' + orderId }], [{ text: '« Kembali ke Katalog', callback_data: 'menu_katalog' }]] };
+      await trackSendBuffer(chatId, 'sendPhoto', img, { caption, parse_mode: 'HTML', reply_markup: kb });
+
+      // AUTO-DETECT pembayaran
+      const watcher = gomerch.watchPayment({
+        amount: p.harga, startTime,
+        onPaid: async (match) => {
+          db.orders[orderId] = {
+            orderId, userId: uid, username: q.from.username || q.from.first_name,
+            produk: p.nama, harga: p.harga, status: 'diproses',
+            paid_via: match.qris_provider_aspi_issuer || 'QRIS',
+            payer: (match.customer_first_name || '') + ' ' + (match.customer_last_name || ''),
+            paid_at: new Date().toISOString()
+          };
+          save();
+          userState[uid] = { step: 'menunggu_proses', orderId, productIndex: i };
+          await trackSend(chatId, 'sendMessage',
+            `🎉 <b>PEMBAYARAN DITERIMA!</b>\n${LINE}\n\n<blockquote>🧾 Order: <code>${orderId}</code>\n💰 ${fmt(p.harga)} — LUNAS\n👤 Pembayar: ${esc((match.customer_first_name || '').trim())}\n💳 Via: ${esc(match.qris_provider_aspi_issuer || 'GoPay')}</blockquote>\n\n⏳ <b>Sedang diproses otomatis...</b>\n📦 Detail VPS dikirim ke sini sekitar 10–15 menit\n📞 Jika lama, hubungi ${CONFIG.support}`,
+            { parse_mode: 'HTML' });
+          CONFIG.adminIds.forEach(aid => {
+            bot.sendMessage(aid,
+              `🔔 <b>ORDER LUNAS (AUTO-APPROVE)!</b>\n${LINE}\n\n<blockquote>🧾 ${orderId}\n👤 @${esc(q.from.username || q.from.first_name)} (<code>${uid}</code>)\n📦 ${esc(p.nama)}\n💰 ${fmt(p.harga)} — paid via ${esc(match.qris_provider_aspi_issuer || 'GoPay')}</blockquote>\n\n⚡ Kirim detail VPS: <code>/kirim ${orderId} &lt;detail&gt;</code>`,
+              { parse_mode: 'HTML' }).catch(() => {});
+          });
+        },
+        onExpire: async () => {
+          if (userState[uid]?.orderId === orderId && userState[uid].step === 'menunggu_bayar') {
+            userState[uid].step = 'expired';
+            trackSend(chatId, 'sendMessage', `⏰ <b>Waktu bayar habis</b> (15 menit) untuk order <code>${orderId}</code>.\nSilakan order ulang di katalog.`, { parse_mode: 'HTML' }).catch(() => {});
+          }
+        }
+      });
+      activeWatchers[orderId] = watcher;
+    } catch (e) {
+      // fallback ke QRIS statis kalau API gagal
+      console.error('gomerch err', e.message);
+      userState[uid] = { step: 'await_bukti', orderId, productIndex: i };
+      const caption = `🧾 <b>PESANAN ${orderId}</b>\n${LINE}\n\n` +
+        `<blockquote>📦 Produk: <b>${esc(p.nama)}</b>\n💰 Total: <b>${fmt(p.harga)}</b></blockquote>\n\n` +
+        `📷 Scan QRIS di atas untuk bayar\n\n` +
+        `<blockquote>1️⃣ Bayar via QRIS\n2️⃣ Screenshot bukti transfer\n3️⃣ Kirim bukti ke sini</blockquote>\n\n` +
+        `⚠️ <i>Pembayaran otomatis sedang gangguan — pakai cara manual ya</i>\n📞 ${CONFIG.support}`;
+      const kb = { inline_keyboard: [[{ text: '« Kembali ke Katalog', callback_data: 'menu_katalog' }]] };
+      if (db.qris) await trackSend(chatId, 'sendPhoto', db.qris, { caption, parse_mode: 'HTML', reply_markup: kb });
+      else await trackSend(chatId, 'sendMessage', caption + '\n\n⚠️ QRIS belum tersedia, hubungi admin.', { parse_mode: 'HTML', reply_markup: kb });
+    }
     return answer();
+  }
+
+  // Cek status bayar manual (kalau auto-detect telat)
+  if (data.startsWith('cekstatus_')) {
+    const oid = data.split('_')[1];
+    const o = db.orders[oid];
+    const st = userState[uid];
+    if (o) return answer('Order ' + oid + ': ' + o.status);
+    if (st?.orderId === oid && st.step === 'menunggu_bayar') return answer('⏳ Belum terdeteksi. Kalau sudah bayar, tunggu ±30 detik lalu cek lagi.');
+    return answer('Order tidak ditemukan / belum dibayar.');
   }
 
   // Admin actions
@@ -367,5 +423,6 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(chatId, `✅ Detail VPS terkirim ke pelanggan (${orderId})`);
   }
 });
+
 
 console.log('Ready. Admin:', CONFIG.adminIds);
