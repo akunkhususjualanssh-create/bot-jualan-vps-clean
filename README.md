@@ -1,74 +1,32 @@
-# BOT JUALAN VPS 🚀
+# Bot Jualan VPS — GEN SSH STORE (v2.2 Auto Payment)
 
-Bot Telegram untuk jualan VPS dengan pembayaran **QRIS manual** + konfirmasi admin.
+Bot Telegram jualan VPS dengan **pembayaran otomatis** via GoMerch (QRIS dinamis GoPay Merchant).
 
-## ✨ Fitur
+## Alur Order
+1. Buyer pilih produk → bot generate **QRIS dinamis** otomatis
+2. Buyer scan & bayar (GoPay/DANA/OVO/dll, nominal persis)
+3. Bot polling mutasi → dana masuk terdeteksi → **AUTO-APPROVE**
+4. Admin kirim detail VPS: `/kirim ORDxxx <detail>`
 
-- Menu **inline button** premium (pesan di-edit, bukan spam chat)
-- Katalog produk via menu admin
-- Alur order: pilih produk → QRIS → kirim bukti → admin approve
-- Admin kirim detail VPS (IP, User, Password, Port) otomatis ke pelanggan
-- `/start` ulang → pesan lama otomatis dihapus (kecuali pesan data VPS)
-- Format HTML rapi (blockquote, bold, code)
-
-## ⚡ INSTALL 1 SCRIPT (VPS baru)
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/akunkhususjualanssh-create/bot-jualan-vps-clean/main/install.sh)
+## Install (VPS)
 ```
-
-atau:
-
-```bash
 git clone https://github.com/akunkhususjualanssh-create/bot-jualan-vps-clean.git
 cd bot-jualan-vps-clean
-bash install.sh
+npm install
+cp gomerch.json.example gomerch.json  # isi kredensial
+node index.js
 ```
 
-Installer akan otomatis:
-1. Install Node.js (kalau belum ada)
-2. Install dependency
-3. **Nanya token bot & owner ID kamu**
-4. Jalanin bot 24 jam (screen/PM2)
+## Konfigurasi
+- Token bot & admin: edit `CONFIG` di `index.js`
+- Kredensial payment: isi `gomerch.json` (jangan di-commit!)
+  - `access_token`, `refresh_token` dari login GoMerch (OTP GoBiz)
+  - `merchant_id`, `static_qr` dari akun GoPay Merchant
+- Token expired → auto-refresh (butuh `refresh_token`)
 
-## 🔧 Konfigurasi Manual
-
-Kalau mau isi ulang konfigurasi:
-```bash
-nano .env
-```
-```env
-BOT_TOKEN=token_bot_dari_botfather
-ADMIN_IDS=id_telegram_kamu
-SUPPORT=@username_support
-STORE_NAME=NAMA TOKO
-```
-
-## 🎮 Perintah
-
-**User:** `/start` `/produk` `/order`
-
-**Admin:** `/admin` (menu tombol) • `/kirim ORDERID IP USER PASS PORT`
-
-## 📦 Alur Pesanan
-
-1. Pelanggan pilih produk & bayar QRIS
-2. Kirim screenshot bukti
-3. Admin dapat notif + tombol ✅ Proses / ❌ Tolak
-4. Admin proses 10–15 menit
-5. Admin kirim: `/kirim ORDERID IP USER PASS PORT`
-6. Detail VPS otomatis sampai ke pelanggan
-
-## 🔄 Manage Bot
-
-```bash
-bash install.sh        # install ulang / isi ulang config
-pm2 status             # cek status (via PM2)
-pm2 restart botvps     # restart
-pm2 stop botvps        # stop
-screen -r botvps       # masuk (via screen)
-```
-
----
-
-Script by **GEN SSH STORE**
+## Fitur
+- ⚡ QRIS dinamis otomatis per order
+- 🤖 Auto-approve saat dana masuk (polling mutasi 5 detik)
+- ⏰ Timeout bayar 15 menit
+- 🛡️ Fallback ke QRIS statis manual kalau API gangguan
+- 🧹 Chat bersih (pesan lama auto-delete saat /start)
