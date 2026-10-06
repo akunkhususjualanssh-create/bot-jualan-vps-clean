@@ -1,0 +1,6 @@
+{
+  "access_token": "PASTE_ACCESS_TOKEN_GOMERCH",
+  "refresh_token": null,
+  "merchant_id": "Gxxxxxxxxxx",
+  "static_qr": "PASTE_QRIS_STATIS_STRING"
+}
